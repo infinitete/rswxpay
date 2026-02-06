@@ -1,8 +1,8 @@
 use aes_gcm::{
-    aead::{Aead, Payload},
     Aes256Gcm, KeyInit, Nonce,
+    aead::{Aead, Payload},
 };
-use base64::{engine::general_purpose::STANDARD as BASE64, Engine};
+use base64::{Engine, engine::general_purpose::STANDARD as BASE64};
 
 use crate::error::WxPayError;
 
@@ -54,8 +54,7 @@ pub fn decrypt_aes_256_gcm(
         .decrypt(gcm_nonce, payload)
         .map_err(|e| WxPayError::DecryptError(format!("decrypt: {e}")))?;
 
-    String::from_utf8(plaintext)
-        .map_err(|e| WxPayError::DecryptError(format!("utf8 decode: {e}")))
+    String::from_utf8(plaintext).map_err(|e| WxPayError::DecryptError(format!("utf8 decode: {e}")))
 }
 
 #[cfg(test)]

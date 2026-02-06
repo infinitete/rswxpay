@@ -1,5 +1,5 @@
-use crate::client::current_timestamp_str;
 use crate::client::WxPayClient;
+use crate::client::current_timestamp_str;
 use crate::crypto::sign::sign_sha256_rsa;
 use crate::error::WxPayError;
 use crate::model::prepay::*;
@@ -28,10 +28,7 @@ impl WxPayClient {
     /// H5 Prepay.
     ///
     /// POST /v3/pay/transactions/h5
-    pub async fn h5_prepay(
-        &self,
-        req: &H5PrepayRequest,
-    ) -> Result<H5PrepayResponse, WxPayError> {
+    pub async fn h5_prepay(&self, req: &H5PrepayRequest) -> Result<H5PrepayResponse, WxPayError> {
         self.post("/v3/pay/transactions/h5", req).await
     }
 

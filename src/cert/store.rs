@@ -1,9 +1,9 @@
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
+use rsa::RsaPublicKey;
 use rsa::pkcs1v15::VerifyingKey;
 use rsa::sha2::Sha256;
-use rsa::RsaPublicKey;
 
 #[derive(Clone)]
 pub struct PlatformCert {

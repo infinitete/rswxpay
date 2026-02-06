@@ -1,9 +1,5 @@
-use base64::{engine::general_purpose::STANDARD as BASE64, Engine};
-use rsa::{
-    pkcs1v15::VerifyingKey,
-    sha2::Sha256,
-    signature::Verifier,
-};
+use base64::{Engine, engine::general_purpose::STANDARD as BASE64};
+use rsa::{pkcs1v15::VerifyingKey, sha2::Sha256, signature::Verifier};
 
 use crate::error::WxPayError;
 
@@ -47,9 +43,9 @@ pub fn verify_signature(
 mod tests {
     use super::*;
     use crate::crypto::sign::sign_sha256_rsa;
-    use rsa::pkcs1v15::SigningKey;
     use rsa::RsaPrivateKey;
     use rsa::RsaPublicKey;
+    use rsa::pkcs1v15::SigningKey;
 
     #[test]
     fn test_verify_roundtrip() {
@@ -88,7 +84,8 @@ mod tests {
         let sig = sign_sha256_rsa(&signing_key, &message).unwrap();
 
         let tampered_body = r#"{"code":"FAIL"}"#;
-        let valid = verify_signature(&verifying_key, timestamp, nonce, tampered_body, &sig).unwrap();
+        let valid =
+            verify_signature(&verifying_key, timestamp, nonce, tampered_body, &sig).unwrap();
         assert!(!valid);
     }
 }

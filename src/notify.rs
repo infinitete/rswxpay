@@ -22,10 +22,7 @@ impl WxPayClient {
 
         // Verify timestamp freshness (±5 minutes)
         let ts: i64 = headers.timestamp.parse().map_err(|_| {
-            WxPayError::NotifyError(format!(
-                "invalid timestamp: {}",
-                headers.timestamp
-            ))
+            WxPayError::NotifyError(format!("invalid timestamp: {}", headers.timestamp))
         })?;
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -42,14 +39,12 @@ impl WxPayClient {
 
         // Verify signature
         let mgr = self.cert_manager.read().await;
-        let cert = mgr
-            .get_cert(&headers.serial)
-            .ok_or_else(|| {
-                WxPayError::NotifyError(format!(
-                    "platform certificate not found for serial: {}",
-                    headers.serial
-                ))
-            })?;
+        let cert = mgr.get_cert(&headers.serial).ok_or_else(|| {
+            WxPayError::NotifyError(format!(
+                "platform certificate not found for serial: {}",
+                headers.serial
+            ))
+        })?;
 
         let valid = verify_signature(
             &cert.verifying_key,
@@ -65,18 +60,14 @@ impl WxPayClient {
             ));
         }
 
-        serde_json::from_str(body).map_err(|e| {
-            WxPayError::NotifyError(format!("deserialize notification: {e}"))
-        })
+        serde_json::from_str(body)
+            .map_err(|e| WxPayError::NotifyError(format!("deserialize notification: {e}")))
     }
 
     /// Decrypt a notification resource's ciphertext using api_v3_key.
     ///
     /// Returns the decrypted JSON string.
-    pub fn decrypt_notify_resource(
-        &self,
-        resource: &NotifyResource,
-    ) -> Result<String, WxPayError> {
+    pub fn decrypt_notify_resource(&self, resource: &NotifyResource) -> Result<String, WxPayError> {
         decrypt_aes_256_gcm(
             &self.config.api_v3_key,
             &resource.nonce,
@@ -93,9 +84,8 @@ impl WxPayClient {
     ) -> Result<TransactionNotify, WxPayError> {
         let envelope = self.parse_notify(headers, body).await?;
         let json = self.decrypt_notify_resource(&envelope.resource)?;
-        serde_json::from_str(&json).map_err(|e| {
-            WxPayError::NotifyError(format!("deserialize transaction notify: {e}"))
-        })
+        serde_json::from_str(&json)
+            .map_err(|e| WxPayError::NotifyError(format!("deserialize transaction notify: {e}")))
     }
 
     /// Parse and verify a refund notification, returning the decrypted data.
@@ -106,8 +96,7 @@ impl WxPayClient {
     ) -> Result<RefundNotify, WxPayError> {
         let envelope = self.parse_notify(headers, body).await?;
         let json = self.decrypt_notify_resource(&envelope.resource)?;
-        serde_json::from_str(&json).map_err(|e| {
-            WxPayError::NotifyError(format!("deserialize refund notify: {e}"))
-        })
+        serde_json::from_str(&json)
+            .map_err(|e| WxPayError::NotifyError(format!("deserialize refund notify: {e}")))
     }
 }

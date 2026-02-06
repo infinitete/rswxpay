@@ -1,4 +1,4 @@
-use base64::{engine::general_purpose::STANDARD as BASE64, Engine};
+use base64::{Engine, engine::general_purpose::STANDARD as BASE64};
 use rsa::{
     pkcs1v15::SigningKey,
     sha2::Sha256,
@@ -57,7 +57,13 @@ mod tests {
 
     #[test]
     fn test_build_sign_message() {
-        let msg = build_sign_message("POST", "/v3/pay/transactions/jsapi", 1554208460, "593BEC0C930BF1AFEB40B4A08C8FB242", "{\"appid\":\"wx1234\"}");
+        let msg = build_sign_message(
+            "POST",
+            "/v3/pay/transactions/jsapi",
+            1554208460,
+            "593BEC0C930BF1AFEB40B4A08C8FB242",
+            "{\"appid\":\"wx1234\"}",
+        );
         let expected = "POST\n/v3/pay/transactions/jsapi\n1554208460\n593BEC0C930BF1AFEB40B4A08C8FB242\n{\"appid\":\"wx1234\"}\n";
         assert_eq!(msg, expected);
     }
@@ -71,7 +77,8 @@ mod tests {
 
     #[test]
     fn test_build_authorization_header() {
-        let header = build_authorization_header("1900000001", "SERIAL123", 1554208460, "nonce123", "sig==");
+        let header =
+            build_authorization_header("1900000001", "SERIAL123", 1554208460, "nonce123", "sig==");
         assert!(header.starts_with("WECHATPAY2-SHA256-RSA2048 "));
         assert!(header.contains(r#"mchid="1900000001""#));
         assert!(header.contains(r#"serial_no="SERIAL123""#));
@@ -82,10 +89,10 @@ mod tests {
 
     #[test]
     fn test_sign_and_verify_roundtrip() {
-        use rsa::pkcs1v15::VerifyingKey;
-        use rsa::signature::Verifier;
         use rsa::RsaPrivateKey;
         use rsa::RsaPublicKey;
+        use rsa::pkcs1v15::VerifyingKey;
+        use rsa::signature::Verifier;
 
         let mut rng = rand::thread_rng();
         let private_key = RsaPrivateKey::new(&mut rng, 2048).unwrap();
