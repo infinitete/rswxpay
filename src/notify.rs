@@ -29,7 +29,7 @@ impl WxPayClient {
         })?;
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
+            .expect("system clock is before UNIX epoch")
             .as_secs() as i64;
         let diff = (now - ts).abs();
         if diff > 300 {

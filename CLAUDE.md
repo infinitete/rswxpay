@@ -42,13 +42,35 @@ WxPayClient (client.rs)          ← Facade: signed HTTP requests + response ver
 
 ### Key Patterns
 
-- **API methods** are added by implementing `impl WxPayClient` in separate `api/` files — extend APIs by adding new files following this pattern.
-- **Builder pattern** for `ClientConfig`: requires `mch_id`, `serial_no`, `api_v3_key` (must be 32 bytes), `private_key_pem` (PKCS1 or PKCS8).
+- **Builder pattern** for `ClientConfig`: requires `mch_id`, `serial_no`, `api_v3_key` (must be 32 bytes), `private_key_pem` (PKCS1 or PKCS8). Fields are `pub(crate)` with public getters (`mch_id()`, `serial_no()`, `base_url()`).
 - **All public methods** return `Result<T, WxPayError>`.
 - **Certificate auto-refresh**: platform certs are fetched from `/v3/certificates`, decrypted with `api_v3_key`, cached in-memory, and refreshed every 12 hours via double-checked locking with `Arc<RwLock<>>`.
+- **Unified response verification**: all HTTP methods (`post`, `post_no_content`, `get`, `get_bytes`) use `verify_response_signature()` — a single method that enforces consistent signature checking (fail-closed when cert store is populated, skip during bootstrap).
 - **Request flow**: build sign message → SHA256withRSA sign → set `Authorization` header → send → verify response signature with platform cert → deserialize.
 - **Notification flow**: verify signature → check timestamp freshness (±5 min) → AES-256-GCM decrypt `resource.ciphertext` → deserialize.
+- **`verify_signature()`** returns `Ok(bool)` (not `Err` on mismatch) — callers check the bool.
+
+### Adding a New API
+
+1. Add request/response model types in `model/` with `Serialize`/`Deserialize` derives. Use `#[serde(skip_serializing_if = "Option::is_none")]` on optional fields.
+2. Add a new file under `api/` with an `impl WxPayClient` block. Delegate to `self.post()`, `self.get()`, `self.post_no_content()`, or `self.get_bytes()` as appropriate.
+3. Register the new module in `api/mod.rs` and `model/mod.rs`.
+4. URL-encode any user-controlled path/query segments using `crate::client::encode_path_segment()`.
+
+### Core Internal Methods (client.rs)
+
+- `post<Req, Resp>()` — POST with JSON body, returns deserialized response
+- `post_no_content<Req>()` — POST expecting 204 (e.g., close order)
+- `get<Resp>()` — GET returning deserialized response
+- `get_bytes()` — GET returning raw `bytes::Bytes` (bill downloads)
+- `verify_response_signature()` — unified response signature verification
+- `encode_path_segment()` — shared URL percent-encoding helper
 
 ### Tests
 
-Tests are inline `#[cfg(test)]` modules within source files, primarily covering crypto operations (sign/verify roundtrips, decrypt/encrypt roundtrips, tamper detection). Tests generate real RSA keys — no mocking framework.
+Tests are inline `#[cfg(test)]` modules within source files (24 tests total):
+- **crypto/**: sign/verify roundtrips, decrypt/encrypt roundtrips, tamper detection (9 tests)
+- **config.rs**: builder validation, required fields, key length, default/custom base URL, getters (9 tests)
+- **client.rs**: `extract_path` URL parsing, `encode_path_segment` encoding (6 tests)
+
+Tests generate real RSA keys — no mocking framework.

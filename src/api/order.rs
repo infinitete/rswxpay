@@ -1,13 +1,8 @@
-use percent_encoding::{utf8_percent_encode, NON_ALPHANUMERIC};
 use serde::Serialize;
 
-use crate::client::WxPayClient;
+use crate::client::{WxPayClient, encode_path_segment};
 use crate::error::WxPayError;
 use crate::model::order::OrderQueryResponse;
-
-fn encode_path(s: &str) -> String {
-    utf8_percent_encode(s, NON_ALPHANUMERIC).to_string()
-}
 
 impl WxPayClient {
     /// Query order by merchant out_trade_no.
@@ -19,8 +14,8 @@ impl WxPayClient {
     ) -> Result<OrderQueryResponse, WxPayError> {
         let path = format!(
             "/v3/pay/transactions/out-trade-no/{}?mchid={}",
-            encode_path(out_trade_no),
-            self.config.mch_id
+            encode_path_segment(out_trade_no),
+            encode_path_segment(&self.config.mch_id)
         );
         self.get(&path).await
     }
@@ -34,8 +29,8 @@ impl WxPayClient {
     ) -> Result<OrderQueryResponse, WxPayError> {
         let path = format!(
             "/v3/pay/transactions/id/{}?mchid={}",
-            encode_path(transaction_id),
-            self.config.mch_id
+            encode_path_segment(transaction_id),
+            encode_path_segment(&self.config.mch_id)
         );
         self.get(&path).await
     }
@@ -47,7 +42,7 @@ impl WxPayClient {
     pub async fn close_order(&self, out_trade_no: &str) -> Result<(), WxPayError> {
         let path = format!(
             "/v3/pay/transactions/out-trade-no/{}/close",
-            encode_path(out_trade_no)
+            encode_path_segment(out_trade_no)
         );
 
         #[derive(Serialize)]

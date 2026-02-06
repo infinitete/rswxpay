@@ -68,7 +68,7 @@ impl PlatformCertManager {
 
         if !resp.status().is_success() {
             let status = resp.status();
-            let body = resp.text().await.unwrap_or_default();
+            let body = resp.text().await.map_err(WxPayError::Http)?;
             return Err(WxPayError::CertError(format!(
                 "fetch certificates failed: status={status}, body={body}"
             )));

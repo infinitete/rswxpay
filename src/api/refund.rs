@@ -1,12 +1,6 @@
-use percent_encoding::{utf8_percent_encode, NON_ALPHANUMERIC};
-
-use crate::client::WxPayClient;
+use crate::client::{WxPayClient, encode_path_segment};
 use crate::error::WxPayError;
 use crate::model::refund::{RefundRequest, RefundResponse};
-
-fn encode_path(s: &str) -> String {
-    utf8_percent_encode(s, NON_ALPHANUMERIC).to_string()
-}
 
 impl WxPayClient {
     /// Create a refund.
@@ -22,7 +16,7 @@ impl WxPayClient {
     pub async fn query_refund(&self, out_refund_no: &str) -> Result<RefundResponse, WxPayError> {
         let path = format!(
             "/v3/pay/refund/domestic/refunds/{}",
-            encode_path(out_refund_no)
+            encode_path_segment(out_refund_no)
         );
         self.get(&path).await
     }

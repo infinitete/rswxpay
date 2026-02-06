@@ -1,9 +1,10 @@
 use std::sync::Arc;
 
+use percent_encoding::{utf8_percent_encode, NON_ALPHANUMERIC};
+use rsa::RsaPrivateKey;
 use rsa::pkcs1::DecodeRsaPrivateKey;
 use rsa::pkcs1v15::SigningKey;
 use rsa::sha2::Sha256;
-use rsa::RsaPrivateKey;
 use tokio::sync::RwLock;
 use tracing::{debug, warn};
 
@@ -12,6 +13,32 @@ use crate::config::ClientConfig;
 use crate::crypto::sign::{build_authorization_header, build_sign_message, sign_sha256_rsa};
 use crate::crypto::verify::verify_signature;
 use crate::error::{ApiErrorResponse, WxPayError};
+
+/// Signature-related headers extracted from a WeChat Pay response.
+struct ResponseSignatureHeaders {
+    timestamp: Option<String>,
+    nonce: Option<String>,
+    signature: Option<String>,
+    serial: Option<String>,
+}
+
+impl ResponseSignatureHeaders {
+    fn from_response(resp: &reqwest::Response) -> Self {
+        Self {
+            timestamp: header_str(resp, "Wechatpay-Timestamp"),
+            nonce: header_str(resp, "Wechatpay-Nonce"),
+            signature: header_str(resp, "Wechatpay-Signature"),
+            serial: header_str(resp, "Wechatpay-Serial"),
+        }
+    }
+
+    fn has_all(&self) -> bool {
+        self.timestamp.is_some()
+            && self.nonce.is_some()
+            && self.signature.is_some()
+            && self.serial.is_some()
+    }
+}
 
 pub struct WxPayClient {
     pub(crate) config: ClientConfig,
@@ -39,10 +66,7 @@ impl WxPayClient {
 
         let signing_key = SigningKey::<Sha256>::new(private_key.clone());
 
-        let http = config
-            .http_client
-            .clone()
-            .unwrap_or_default();
+        let http = config.http_client.clone().unwrap_or_default();
 
         let cert_manager = Arc::new(RwLock::new(PlatformCertManager::new()));
 
@@ -85,11 +109,7 @@ impl WxPayClient {
     }
 
     /// Send a signed POST request and return the deserialized response.
-    pub(crate) async fn post<Req, Resp>(
-        &self,
-        path: &str,
-        body: &Req,
-    ) -> Result<Resp, WxPayError>
+    pub(crate) async fn post<Req, Resp>(&self, path: &str, body: &Req) -> Result<Resp, WxPayError>
     where
         Req: serde::Serialize,
         Resp: serde::de::DeserializeOwned,
@@ -112,34 +132,14 @@ impl WxPayClient {
         let body_str = serde_json::to_string(body)?;
         let resp = self.do_request("POST", path, &body_str).await?;
         let status = resp.status();
-
-        let wechat_timestamp = header_str(&resp, "Wechatpay-Timestamp");
-        let wechat_nonce = header_str(&resp, "Wechatpay-Nonce");
-        let wechat_signature = header_str(&resp, "Wechatpay-Signature");
-        let wechat_serial = header_str(&resp, "Wechatpay-Serial");
-
-        let body = resp.text().await.unwrap_or_default();
+        let sig_headers = ResponseSignatureHeaders::from_response(&resp);
+        let body = resp.text().await?;
 
         if !status.is_success() {
             return self.parse_api_error(&body);
         }
 
-        if let (Some(ts), Some(nonce), Some(sig), Some(serial)) = (
-            &wechat_timestamp,
-            &wechat_nonce,
-            &wechat_signature,
-            &wechat_serial,
-        ) {
-            let mgr = self.cert_manager.read().await;
-            if let Some(cert) = mgr.get_cert(serial) {
-                let valid = verify_signature(&cert.verifying_key, ts, nonce, &body, sig)?;
-                if !valid {
-                    return Err(WxPayError::VerifyError(
-                        "response signature verification failed".into(),
-                    ));
-                }
-            }
-        }
+        self.verify_response_signature(&sig_headers, &body).await?;
 
         Ok(())
     }
@@ -192,34 +192,26 @@ impl WxPayClient {
             .await?;
 
         let status = resp.status();
-        let wechat_timestamp = header_str(&resp, "Wechatpay-Timestamp");
-        let wechat_nonce = header_str(&resp, "Wechatpay-Nonce");
-        let wechat_signature = header_str(&resp, "Wechatpay-Signature");
-        let wechat_serial = header_str(&resp, "Wechatpay-Serial");
+        let sig_headers = ResponseSignatureHeaders::from_response(&resp);
 
         if !status.is_success() {
-            let body = resp.text().await.unwrap_or_default();
+            let body = resp.text().await?;
             return self.parse_api_error(&body);
         }
 
         let data = resp.bytes().await.map_err(WxPayError::Http)?;
 
-        if let (Some(ts), Some(nonce), Some(sig), Some(serial)) = (
-            &wechat_timestamp,
-            &wechat_nonce,
-            &wechat_signature,
-            &wechat_serial,
-        ) {
-            let body_str = String::from_utf8_lossy(&data);
-            let mgr = self.cert_manager.read().await;
-            if let Some(cert) = mgr.get_cert(serial) {
-                let valid = verify_signature(&cert.verifying_key, ts, nonce, &body_str, sig)?;
-                if !valid {
-                    return Err(WxPayError::VerifyError(
-                        "response signature verification failed".into(),
-                    ));
-                }
-            }
+        // Only attempt UTF-8 conversion and signature verification when
+        // signature headers are present. Binary responses (e.g. GZIP bills)
+        // typically do not include signature headers.
+        if sig_headers.has_all() {
+            let body_str = String::from_utf8(data.to_vec()).map_err(|e| {
+                WxPayError::VerifyError(format!("response body is not valid UTF-8: {e}"))
+            })?;
+            self.verify_response_signature(&sig_headers, &body_str)
+                .await?;
+        } else {
+            self.verify_response_signature(&sig_headers, "").await?;
         }
 
         Ok(data)
@@ -270,23 +262,44 @@ impl WxPayClient {
 
     async fn verify_and_read(&self, resp: reqwest::Response) -> Result<String, WxPayError> {
         let status = resp.status();
-
-        let wechat_timestamp = header_str(&resp, "Wechatpay-Timestamp");
-        let wechat_nonce = header_str(&resp, "Wechatpay-Nonce");
-        let wechat_signature = header_str(&resp, "Wechatpay-Signature");
-        let wechat_serial = header_str(&resp, "Wechatpay-Serial");
-
-        let body = resp.text().await.unwrap_or_default();
+        let sig_headers = ResponseSignatureHeaders::from_response(&resp);
+        let body = resp.text().await?;
 
         if !status.is_success() {
             return self.parse_api_error(&body);
         }
 
-        match (&wechat_timestamp, &wechat_nonce, &wechat_signature, &wechat_serial) {
+        self.verify_response_signature(&sig_headers, &body).await?;
+
+        Ok(body)
+    }
+
+    /// Unified response signature verification.
+    ///
+    /// Logic:
+    /// - If all four signature headers are present and cert store is non-empty,
+    ///   the signature MUST verify successfully.
+    /// - If all four signature headers are present but cert store is empty
+    ///   (bootstrap phase), verification is skipped.
+    /// - If any signature header is missing and cert store is non-empty,
+    ///   returns an error (response should have been signed).
+    /// - If any signature header is missing and cert store is empty
+    ///   (bootstrap phase), verification is skipped.
+    async fn verify_response_signature(
+        &self,
+        headers: &ResponseSignatureHeaders,
+        body: &str,
+    ) -> Result<(), WxPayError> {
+        match (
+            &headers.timestamp,
+            &headers.nonce,
+            &headers.signature,
+            &headers.serial,
+        ) {
             (Some(ts), Some(nonce), Some(sig), Some(serial)) => {
                 let mgr = self.cert_manager.read().await;
                 if let Some(cert) = mgr.get_cert(serial) {
-                    let valid = verify_signature(&cert.verifying_key, ts, nonce, &body, sig)?;
+                    let valid = verify_signature(&cert.verifying_key, ts, nonce, body, sig)?;
                     if !valid {
                         return Err(WxPayError::VerifyError(
                             "response signature verification failed".into(),
@@ -298,7 +311,7 @@ impl WxPayClient {
                         "platform certificate not found for serial: {serial}"
                     )));
                 }
-                // cert store empty = bootstrap, skip
+                // cert store empty = bootstrap, skip verification
             }
             _ => {
                 let mgr = self.cert_manager.read().await;
@@ -308,10 +321,11 @@ impl WxPayClient {
                         "response missing signature headers".into(),
                     ));
                 }
+                // cert store empty = bootstrap, skip verification
             }
         }
 
-        Ok(body)
+        Ok(())
     }
 
     fn parse_api_error<T>(&self, body: &str) -> Result<T, WxPayError> {
@@ -330,10 +344,15 @@ impl WxPayClient {
     }
 }
 
+/// Percent-encode a string so it is safe to use in a URL path segment or query value.
+pub(crate) fn encode_path_segment(s: &str) -> String {
+    utf8_percent_encode(s, NON_ALPHANUMERIC).to_string()
+}
+
 pub(crate) fn current_timestamp() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
+        .expect("system clock is before UNIX epoch")
         .as_secs() as i64
 }
 
@@ -352,8 +371,68 @@ fn extract_path(url: &str, base_url: &str) -> String {
     if let Some(stripped) = url.strip_prefix(base_url) {
         stripped.to_string()
     } else if let Some((_scheme, rest)) = url.split_once("://") {
-        rest.find('/').map_or("/".to_string(), |i| rest[i..].to_string())
+        rest.find('/')
+            .map_or("/".to_string(), |i| rest[i..].to_string())
     } else {
         url.to_string()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // --- extract_path tests ---
+
+    #[test]
+    fn test_extract_path_with_matching_base_url() {
+        let base = "https://api.mch.weixin.qq.com";
+        let url = "https://api.mch.weixin.qq.com/v3/pay/transactions/jsapi";
+        let path = extract_path(url, base);
+        assert_eq!(path, "/v3/pay/transactions/jsapi");
+    }
+
+    #[test]
+    fn test_extract_path_with_different_host() {
+        let base = "https://api.mch.weixin.qq.com";
+        let url = "https://other.example.com/v3/billdownload?token=abc";
+        let path = extract_path(url, base);
+        assert_eq!(path, "/v3/billdownload?token=abc");
+    }
+
+    #[test]
+    fn test_extract_path_already_path() {
+        let base = "https://api.mch.weixin.qq.com";
+        let url = "/v3/certificates";
+        let path = extract_path(url, base);
+        assert_eq!(path, "/v3/certificates");
+    }
+
+    #[test]
+    fn test_extract_path_url_without_path() {
+        let base = "https://api.mch.weixin.qq.com";
+        let url = "https://example.com";
+        let path = extract_path(url, base);
+        assert_eq!(path, "/");
+    }
+
+    // --- encode_path_segment tests ---
+
+    #[test]
+    fn test_encode_path_segment_plain() {
+        let encoded = encode_path_segment("hello");
+        assert_eq!(encoded, "hello");
+    }
+
+    #[test]
+    fn test_encode_path_segment_special_chars() {
+        let encoded = encode_path_segment("a/b&c=d");
+        // NON_ALPHANUMERIC encodes everything except ASCII alphanumerics
+        assert!(!encoded.contains('/'));
+        assert!(!encoded.contains('&'));
+        assert!(!encoded.contains('='));
+        assert!(encoded.contains("%2F")); // '/' encoded
+        assert!(encoded.contains("%26")); // '&' encoded
+        assert!(encoded.contains("%3D")); // '=' encoded
     }
 }
