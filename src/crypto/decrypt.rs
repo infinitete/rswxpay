@@ -99,4 +99,102 @@ mod tests {
         let err = result.unwrap_err().to_string();
         assert!(err.contains("12 bytes"));
     }
+
+    #[test]
+    fn test_decrypt_invalid_base64_ciphertext() {
+        let key = "01234567890123456789012345678901";
+        let nonce_str = "0123456789ab";
+        let result = decrypt_aes_256_gcm(key, nonce_str, "", "not-valid-base64!!!");
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("base64"));
+    }
+
+    #[test]
+    fn test_decrypt_tampered_ciphertext() {
+        let key = "01234567890123456789012345678901";
+        let nonce_str = "0123456789ab";
+        let aad = "certificate";
+        let plaintext = r#"{"mchid":"1900000001"}"#;
+
+        // Encrypt
+        let cipher = Aes256Gcm::new_from_slice(key.as_bytes()).unwrap();
+        let gcm_nonce = Nonce::from_slice(nonce_str.as_bytes());
+        let payload = Payload {
+            msg: plaintext.as_bytes(),
+            aad: aad.as_bytes(),
+        };
+        let mut ciphertext = cipher.encrypt(gcm_nonce, payload).unwrap();
+
+        // Tamper with a byte
+        ciphertext[0] ^= 0xFF;
+        let ciphertext_b64 = BASE64.encode(&ciphertext);
+
+        let result = decrypt_aes_256_gcm(key, nonce_str, aad, &ciphertext_b64);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("decrypt"));
+    }
+
+    #[test]
+    fn test_decrypt_wrong_associated_data() {
+        let key = "01234567890123456789012345678901";
+        let nonce_str = "0123456789ab";
+        let plaintext = r#"{"mchid":"1900000001"}"#;
+
+        // Encrypt with correct AAD
+        let cipher = Aes256Gcm::new_from_slice(key.as_bytes()).unwrap();
+        let gcm_nonce = Nonce::from_slice(nonce_str.as_bytes());
+        let payload = Payload {
+            msg: plaintext.as_bytes(),
+            aad: b"correct_aad",
+        };
+        let ciphertext = cipher.encrypt(gcm_nonce, payload).unwrap();
+        let ciphertext_b64 = BASE64.encode(&ciphertext);
+
+        // Decrypt with wrong AAD — GCM authentication must fail
+        let result = decrypt_aes_256_gcm(key, nonce_str, "wrong_aad", &ciphertext_b64);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_decrypt_wrong_key() {
+        let key = "01234567890123456789012345678901";
+        let wrong_key = "ABCDEFGHIJKLMNOPQRSTUVWXYZ012345";
+        let nonce_str = "0123456789ab";
+        let aad = "certificate";
+        let plaintext = r#"{"mchid":"1900000001"}"#;
+
+        // Encrypt with correct key
+        let cipher = Aes256Gcm::new_from_slice(key.as_bytes()).unwrap();
+        let gcm_nonce = Nonce::from_slice(nonce_str.as_bytes());
+        let payload = Payload {
+            msg: plaintext.as_bytes(),
+            aad: aad.as_bytes(),
+        };
+        let ciphertext = cipher.encrypt(gcm_nonce, payload).unwrap();
+        let ciphertext_b64 = BASE64.encode(&ciphertext);
+
+        // Decrypt with wrong key
+        let result = decrypt_aes_256_gcm(wrong_key, nonce_str, aad, &ciphertext_b64);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_decrypt_empty_associated_data() {
+        let key = "01234567890123456789012345678901";
+        let nonce_str = "0123456789ab";
+        let plaintext = r#"{"data":"test"}"#;
+
+        // Encrypt with empty AAD (some notifications have empty associated_data)
+        let cipher = Aes256Gcm::new_from_slice(key.as_bytes()).unwrap();
+        let gcm_nonce = Nonce::from_slice(nonce_str.as_bytes());
+        let payload = Payload {
+            msg: plaintext.as_bytes(),
+            aad: b"",
+        };
+        let ciphertext = cipher.encrypt(gcm_nonce, payload).unwrap();
+        let ciphertext_b64 = BASE64.encode(&ciphertext);
+
+        let decrypted = decrypt_aes_256_gcm(key, nonce_str, "", &ciphertext_b64).unwrap();
+        assert_eq!(decrypted, plaintext);
+    }
 }

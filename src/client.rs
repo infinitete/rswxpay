@@ -1,4 +1,5 @@
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use percent_encoding::{NON_ALPHANUMERIC, utf8_percent_encode};
 use rsa::RsaPrivateKey;
@@ -8,7 +9,7 @@ use rsa::sha2::Sha256;
 use tokio::sync::RwLock;
 use tracing::{debug, warn};
 
-use crate::cert::manager::PlatformCertManager;
+use crate::cert::manager::{PlatformCertManager, fetch_platform_certs};
 use crate::config::ClientConfig;
 use crate::crypto::sign::{build_authorization_header, build_sign_message, sign_sha256_rsa};
 use crate::crypto::verify::verify_signature;
@@ -43,8 +44,11 @@ impl ResponseSignatureHeaders {
 pub struct WxPayClient {
     pub(crate) config: ClientConfig,
     pub(crate) http: reqwest::Client,
-    pub(crate) signing_key: SigningKey<Sha256>,
+    pub(crate) signing_key: Arc<SigningKey<Sha256>>,
     pub(crate) cert_manager: Arc<RwLock<PlatformCertManager>>,
+    /// Next cert refresh time as Unix epoch seconds.
+    /// 0 means "needs refresh now" (initial state).
+    next_cert_refresh: AtomicU64,
 }
 
 impl WxPayClient {
@@ -64,7 +68,7 @@ impl WxPayClient {
             })
             .map_err(|e| WxPayError::InvalidKey(format!("parse private key: {e}")))?;
 
-        let signing_key = SigningKey::<Sha256>::new(private_key.clone());
+        let signing_key = Arc::new(SigningKey::<Sha256>::new(private_key.clone()));
 
         let http = config.http_client.clone().unwrap_or_default();
 
@@ -75,6 +79,7 @@ impl WxPayClient {
             http,
             signing_key,
             cert_manager,
+            next_cert_refresh: AtomicU64::new(0),
         };
 
         client.ensure_certs().await?;
@@ -83,27 +88,36 @@ impl WxPayClient {
     }
 
     /// Ensure platform certificates are loaded and fresh.
+    ///
+    /// Uses an atomic timestamp on the fast path (no lock) to skip the check
+    /// when certificates are known to be fresh. Only acquires the write lock
+    /// briefly to swap in the new certificates.
     pub(crate) async fn ensure_certs(&self) -> Result<(), WxPayError> {
-        let needs_refresh = {
-            let mgr = self.cert_manager.read().await;
-            mgr.is_empty() || mgr.needs_refresh()
-        };
-
-        if needs_refresh {
-            let mut mgr = self.cert_manager.write().await;
-            if mgr.is_empty() || mgr.needs_refresh() {
-                debug!("refreshing platform certificates");
-                mgr.refresh(
-                    &self.http,
-                    &self.config.base_url,
-                    &self.config.mch_id,
-                    &self.config.serial_no,
-                    &self.signing_key,
-                    &self.config.api_v3_key,
-                )
-                .await?;
-            }
+        let now = current_timestamp() as u64;
+        if now < self.next_cert_refresh.load(Ordering::Acquire) {
+            return Ok(());
         }
+
+        // Slow path: fetch certs outside any lock to minimize lock hold time.
+        let new_certs = fetch_platform_certs(
+            &self.http,
+            &self.config.base_url,
+            &self.config.mch_id,
+            &self.config.serial_no,
+            &self.signing_key,
+            &self.config.api_v3_key,
+        )
+        .await?;
+
+        // Brief write lock only for the cert store swap.
+        let mut mgr = self.cert_manager.write().await;
+        mgr.update_certs(new_certs);
+        drop(mgr);
+
+        // Schedule next refresh in 12 hours.
+        let refresh_at = current_timestamp() as u64 + 12 * 3600;
+        self.next_cert_refresh
+            .store(refresh_at, Ordering::Release);
 
         Ok(())
     }
@@ -173,7 +187,12 @@ impl WxPayClient {
         let nonce = uuid::Uuid::new_v4().to_string();
 
         let sign_msg = build_sign_message("GET", &path, timestamp, &nonce, "");
-        let signature = sign_sha256_rsa(&self.signing_key, &sign_msg)?;
+        let signing_key = Arc::clone(&self.signing_key);
+        let signature = tokio::task::spawn_blocking(move || {
+            sign_sha256_rsa(&signing_key, &sign_msg)
+        })
+        .await
+        .map_err(|e| WxPayError::SignError(format!("task join: {e}")))??;
         let auth = build_authorization_header(
             &self.config.mch_id,
             &self.config.serial_no,
@@ -231,7 +250,14 @@ impl WxPayClient {
         let full_url = format!("{}{path}", self.config.base_url);
 
         let sign_msg = build_sign_message(method, path, timestamp, &nonce, body);
-        let signature = sign_sha256_rsa(&self.signing_key, &sign_msg)?;
+        // Move RSA signing to the blocking thread pool to avoid blocking
+        // the async runtime (~1-3ms for RSA-2048 PKCS1v15 signing).
+        let signing_key = Arc::clone(&self.signing_key);
+        let signature = tokio::task::spawn_blocking(move || {
+            sign_sha256_rsa(&signing_key, &sign_msg)
+        })
+        .await
+        .map_err(|e| WxPayError::SignError(format!("task join: {e}")))??;
         let auth = build_authorization_header(
             &self.config.mch_id,
             &self.config.serial_no,
@@ -285,6 +311,15 @@ impl WxPayClient {
     ///   returns an error (response should have been signed).
     /// - If any signature header is missing and cert store is empty
     ///   (bootstrap phase), verification is skipped.
+    ///
+    /// **Security note on bootstrap skip**: During the initial `/v3/certificates`
+    /// fetch the cert store is empty, so RSA signature verification cannot be
+    /// performed. This is safe because the fetched certificate ciphertext is
+    /// encrypted with AES-256-GCM using `api_v3_key` as the key. An attacker
+    /// without `api_v3_key` cannot produce validly-encrypted certificate data,
+    /// so AES-GCM decryption provides implicit authentication of the bootstrap
+    /// response. The security of this bootstrap depends entirely on `api_v3_key`
+    /// remaining secret.
     async fn verify_response_signature(
         &self,
         headers: &ResponseSignatureHeaders,
@@ -311,7 +346,7 @@ impl WxPayClient {
                         "platform certificate not found for serial: {serial}"
                     )));
                 }
-                // cert store empty = bootstrap, skip verification
+                // cert store empty = bootstrap, skip verification (see safety note above)
             }
             _ => {
                 let mgr = self.cert_manager.read().await;
@@ -321,7 +356,7 @@ impl WxPayClient {
                         "response missing signature headers".into(),
                     ));
                 }
-                // cert store empty = bootstrap, skip verification
+                // cert store empty = bootstrap, skip verification (see safety note above)
             }
         }
 
@@ -434,5 +469,60 @@ mod tests {
         assert!(encoded.contains("%2F")); // '/' encoded
         assert!(encoded.contains("%26")); // '&' encoded
         assert!(encoded.contains("%3D")); // '=' encoded
+    }
+
+    #[test]
+    fn test_encode_path_segment_empty() {
+        assert_eq!(encode_path_segment(""), "");
+    }
+
+    #[test]
+    fn test_encode_path_segment_unicode() {
+        let encoded = encode_path_segment("中文");
+        assert!(!encoded.contains('中'));
+        assert!(!encoded.contains('文'));
+        // Each Chinese char is 3 UTF-8 bytes → 3 percent-encoded triplets
+        assert_eq!(encoded.matches('%').count(), 6);
+    }
+
+    #[test]
+    fn test_encode_path_segment_spaces() {
+        let encoded = encode_path_segment("hello world");
+        assert!(!encoded.contains(' '));
+        assert!(encoded.contains("%20"));
+    }
+
+    // --- current_timestamp tests ---
+
+    #[test]
+    fn test_current_timestamp_is_positive() {
+        let ts = current_timestamp();
+        assert!(ts > 0);
+        // Should be after 2024-01-01 (1704067200)
+        assert!(ts > 1_704_067_200);
+    }
+
+    #[test]
+    fn test_current_timestamp_str_is_numeric() {
+        let ts_str = current_timestamp_str();
+        assert!(ts_str.parse::<i64>().is_ok());
+    }
+
+    // --- more extract_path edge cases ---
+
+    #[test]
+    fn test_extract_path_with_query_string() {
+        let base = "https://api.mch.weixin.qq.com";
+        let url = "https://api.mch.weixin.qq.com/v3/bill/tradebill?bill_date=2023-01-01";
+        let path = extract_path(url, base);
+        assert_eq!(path, "/v3/bill/tradebill?bill_date=2023-01-01");
+    }
+
+    #[test]
+    fn test_extract_path_bare_string() {
+        let base = "https://api.mch.weixin.qq.com";
+        let url = "no-scheme-no-slash";
+        let path = extract_path(url, base);
+        assert_eq!(path, "no-scheme-no-slash");
     }
 }

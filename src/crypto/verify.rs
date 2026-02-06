@@ -88,4 +88,74 @@ mod tests {
             verify_signature(&verifying_key, timestamp, nonce, tampered_body, &sig).unwrap();
         assert!(!valid);
     }
+
+    #[test]
+    fn test_build_verify_message_format() {
+        let msg = build_verify_message("1554208460", "nonce123", r#"{"code":"OK"}"#);
+        assert_eq!(msg, "1554208460\nnonce123\n{\"code\":\"OK\"}\n");
+    }
+
+    #[test]
+    fn test_build_verify_message_empty_body() {
+        let msg = build_verify_message("123", "nonce", "");
+        assert_eq!(msg, "123\nnonce\n\n");
+    }
+
+    #[test]
+    fn test_verify_invalid_base64() {
+        let mut rng = rand::thread_rng();
+        let private_key = RsaPrivateKey::new(&mut rng, 2048).unwrap();
+        let public_key = RsaPublicKey::from(&private_key);
+        let verifying_key = VerifyingKey::<Sha256>::new(public_key);
+
+        let result = verify_signature(&verifying_key, "123", "nonce", "body", "not-valid!!!");
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("base64"));
+    }
+
+    #[test]
+    fn test_verify_wrong_key() {
+        let mut rng = rand::thread_rng();
+
+        // Sign with key A
+        let private_a = RsaPrivateKey::new(&mut rng, 2048).unwrap();
+        let signing_key_a = SigningKey::<Sha256>::new(private_a);
+
+        // Verify with key B
+        let private_b = RsaPrivateKey::new(&mut rng, 2048).unwrap();
+        let public_b = RsaPublicKey::from(&private_b);
+        let verifying_key_b = VerifyingKey::<Sha256>::new(public_b);
+
+        let timestamp = "1554208460";
+        let nonce = "nonce";
+        let body = "body";
+
+        let message = build_verify_message(timestamp, nonce, body);
+        let sig = sign_sha256_rsa(&signing_key_a, &message).unwrap();
+
+        // Signature from key A should not verify with key B
+        let valid = verify_signature(&verifying_key_b, timestamp, nonce, body, &sig).unwrap();
+        assert!(!valid);
+    }
+
+    #[test]
+    fn test_verify_tampered_timestamp() {
+        let mut rng = rand::thread_rng();
+        let private_key = RsaPrivateKey::new(&mut rng, 2048).unwrap();
+        let public_key = RsaPublicKey::from(&private_key);
+
+        let signing_key = SigningKey::<Sha256>::new(private_key);
+        let verifying_key = VerifyingKey::<Sha256>::new(public_key);
+
+        let timestamp = "1554208460";
+        let nonce = "nonce";
+        let body = r#"{"code":"SUCCESS"}"#;
+
+        let message = build_verify_message(timestamp, nonce, body);
+        let sig = sign_sha256_rsa(&signing_key, &message).unwrap();
+
+        // Tamper with timestamp
+        let valid = verify_signature(&verifying_key, "9999999999", nonce, body, &sig).unwrap();
+        assert!(!valid);
+    }
 }

@@ -1786,6 +1786,7 @@ dependencies = [
  "tracing",
  "uuid",
  "x509-cert",
+ "zeroize",
 ]
 
 [[package]]

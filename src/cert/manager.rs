@@ -39,72 +39,10 @@ impl PlatformCertManager {
         self.store.needs_refresh(self.refresh_interval)
     }
 
-    pub async fn refresh(
-        &mut self,
-        http: &reqwest::Client,
-        base_url: &str,
-        mch_id: &str,
-        serial_no: &str,
-        signing_key: &SigningKey<Sha256>,
-        api_v3_key: &str,
-    ) -> Result<(), WxPayError> {
-        debug!("fetching platform certificates");
-        let url = format!("{base_url}{CERTIFICATES_PATH}");
-        let timestamp = crate::client::current_timestamp();
-        let nonce = uuid::Uuid::new_v4().to_string();
-
-        let sign_msg = build_sign_message("GET", CERTIFICATES_PATH, timestamp, &nonce, "");
-        let signature = sign_sha256_rsa(signing_key, &sign_msg)?;
-        let auth = build_authorization_header(mch_id, serial_no, timestamp, &nonce, &signature);
-
-        let resp = http
-            .get(&url)
-            .header("Authorization", &auth)
-            .header("Accept", "application/json")
-            .header("User-Agent", "wxp-rust-sdk/0.1.0")
-            .send()
-            .await
-            .map_err(WxPayError::Http)?;
-
-        if !resp.status().is_success() {
-            let status = resp.status();
-            let body = resp.text().await.map_err(WxPayError::Http)?;
-            return Err(WxPayError::CertError(format!(
-                "fetch certificates failed: status={status}, body={body}"
-            )));
-        }
-
-        let cert_resp: CertificatesResponse = resp
-            .json()
-            .await
-            .map_err(|e| WxPayError::CertError(format!("deserialize certificates: {e}")))?;
-
-        let mut certs = Vec::new();
-        for data in &cert_resp.data {
-            let enc = &data.encrypt_certificate;
-            let pem_str = decrypt_aes_256_gcm(
-                api_v3_key,
-                &enc.nonce,
-                &enc.associated_data,
-                &enc.ciphertext,
-            )?;
-
-            let public_key = extract_public_key_from_pem(&pem_str)?;
-            let verifying_key = VerifyingKey::<Sha256>::new(public_key.clone());
-
-            certs.push(PlatformCert {
-                serial_no: data.serial_no.clone(),
-                effective_time: data.effective_time.clone(),
-                expire_time: data.expire_time.clone(),
-                public_key,
-                verifying_key,
-                certificate_pem: pem_str,
-            });
-        }
-
+    /// Replace the certificate store with new certificates.
+    pub(crate) fn update_certs(&mut self, certs: Vec<PlatformCert>) {
         info!(count = certs.len(), "platform certificates updated");
         self.store.update(certs);
-        Ok(())
     }
 }
 
@@ -112,6 +50,75 @@ impl Default for PlatformCertManager {
     fn default() -> Self {
         Self::new()
     }
+}
+
+/// Fetch and decrypt platform certificates from WeChat Pay API.
+///
+/// This is a standalone function so the caller can perform the HTTP fetch
+/// **outside** any lock, minimizing write-lock hold time during cert refresh.
+pub(crate) async fn fetch_platform_certs(
+    http: &reqwest::Client,
+    base_url: &str,
+    mch_id: &str,
+    serial_no: &str,
+    signing_key: &SigningKey<Sha256>,
+    api_v3_key: &str,
+) -> Result<Vec<PlatformCert>, WxPayError> {
+    debug!("fetching platform certificates");
+    let url = format!("{base_url}{CERTIFICATES_PATH}");
+    let timestamp = crate::client::current_timestamp();
+    let nonce = uuid::Uuid::new_v4().to_string();
+
+    let sign_msg = build_sign_message("GET", CERTIFICATES_PATH, timestamp, &nonce, "");
+    let signature = sign_sha256_rsa(signing_key, &sign_msg)?;
+    let auth = build_authorization_header(mch_id, serial_no, timestamp, &nonce, &signature);
+
+    let resp = http
+        .get(&url)
+        .header("Authorization", &auth)
+        .header("Accept", "application/json")
+        .header("User-Agent", "wxp-rust-sdk/0.1.0")
+        .send()
+        .await
+        .map_err(WxPayError::Http)?;
+
+    if !resp.status().is_success() {
+        let status = resp.status();
+        let body = resp.text().await.map_err(WxPayError::Http)?;
+        return Err(WxPayError::CertError(format!(
+            "fetch certificates failed: status={status}, body={body}"
+        )));
+    }
+
+    let cert_resp: CertificatesResponse = resp
+        .json()
+        .await
+        .map_err(|e| WxPayError::CertError(format!("deserialize certificates: {e}")))?;
+
+    let mut certs = Vec::new();
+    for data in &cert_resp.data {
+        let enc = &data.encrypt_certificate;
+        let pem_str = decrypt_aes_256_gcm(
+            api_v3_key,
+            &enc.nonce,
+            &enc.associated_data,
+            &enc.ciphertext,
+        )?;
+
+        let public_key = extract_public_key_from_pem(&pem_str)?;
+        let verifying_key = VerifyingKey::<Sha256>::new(public_key.clone());
+
+        certs.push(PlatformCert {
+            serial_no: data.serial_no.clone(),
+            effective_time: data.effective_time.clone(),
+            expire_time: data.expire_time.clone(),
+            public_key,
+            verifying_key,
+            certificate_pem: pem_str,
+        });
+    }
+
+    Ok(certs)
 }
 
 fn extract_public_key_from_pem(pem_str: &str) -> Result<rsa::RsaPublicKey, WxPayError> {

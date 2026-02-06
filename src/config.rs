@@ -1,3 +1,5 @@
+use zeroize::Zeroize;
+
 use crate::error::WxPayError;
 
 const DEFAULT_BASE_URL: &str = "https://api.mch.weixin.qq.com";
@@ -36,6 +38,13 @@ impl ClientConfig {
     /// Returns the base URL.
     pub fn base_url(&self) -> &str {
         &self.base_url
+    }
+}
+
+impl Drop for ClientConfig {
+    fn drop(&mut self) {
+        self.api_v3_key.zeroize();
+        self.private_key_pem.zeroize();
     }
 }
 
@@ -93,6 +102,11 @@ impl ClientConfigBuilder {
             .private_key_pem
             .ok_or_else(|| WxPayError::Config("private_key_pem is required".into()))?;
 
+        if !api_v3_key.is_ascii() {
+            return Err(WxPayError::Config(
+                "api_v3_key must contain only ASCII characters".into(),
+            ));
+        }
         if api_v3_key.len() != 32 {
             return Err(WxPayError::Config(format!(
                 "api_v3_key must be 32 bytes, got {}",
@@ -264,5 +278,59 @@ mod tests {
         assert_eq!(config.mch_id(), "1900000001");
         assert_eq!(config.serial_no(), "SERIAL123");
         assert_eq!(config.base_url(), "https://api.mch.weixin.qq.com");
+    }
+
+    #[test]
+    fn test_builder_non_ascii_api_v3_key() {
+        let pem = test_private_key_pem();
+        let result = ClientConfig::builder()
+            .mch_id("1900000001")
+            .serial_no("SERIAL123")
+            .api_v3_key("非ASCII密钥")
+            .private_key_pem(pem)
+            .build();
+
+        let err = expect_err(result);
+        assert!(matches!(err, WxPayError::Config(msg) if msg.contains("ASCII")));
+    }
+
+    #[test]
+    fn test_builder_non_ascii_api_v3_key_32_bytes() {
+        let pem = test_private_key_pem();
+        // 10 Chinese chars (30 UTF-8 bytes) + 2 ASCII = 32 bytes total,
+        // but is_ascii() returns false — must be rejected.
+        let result = ClientConfig::builder()
+            .mch_id("1900000001")
+            .serial_no("SERIAL123")
+            .api_v3_key("密钥密钥密钥密钥密钥ab")
+            .private_key_pem(pem)
+            .build();
+
+        let err = expect_err(result);
+        assert!(matches!(err, WxPayError::Config(msg) if msg.contains("ASCII")));
+    }
+
+    #[test]
+    fn test_zeroize_clears_sensitive_fields() {
+        use zeroize::Zeroize;
+
+        let pem = test_private_key_pem();
+        let mut config = ClientConfig::builder()
+            .mch_id("1900000001")
+            .serial_no("SERIAL123")
+            .api_v3_key(test_api_v3_key())
+            .private_key_pem(pem)
+            .build()
+            .unwrap();
+
+        assert!(!config.api_v3_key.is_empty());
+        assert!(!config.private_key_pem.is_empty());
+
+        // Simulate what Drop does
+        config.api_v3_key.zeroize();
+        config.private_key_pem.zeroize();
+
+        assert!(config.api_v3_key.is_empty());
+        assert!(config.private_key_pem.is_empty());
     }
 }

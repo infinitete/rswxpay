@@ -11,8 +11,9 @@
 - 申请退款、退款查询
 - 交易账单、资金账单下载
 - 支付回调通知验签与解密（交易通知 / 退款通知）
-- 平台证书自动下载与缓存
+- 平台证书自动下载与缓存（12 小时自动刷新）
 - 小程序 / App 调起支付参数签名
+- 敏感字段（私钥、API v3 密钥）内存安全清零
 
 ## 依赖
 
@@ -22,6 +23,7 @@
 - 通知解密：`aes-gcm` (AES-256-GCM)
 - 证书解析：`x509-cert`
 - 序列化：`serde` + `serde_json`
+- 内存安全：`zeroize`（敏感字段销毁时清零）
 
 ## 快速开始
 
@@ -162,10 +164,21 @@ wxp/src/
     └── cert.rs         证书接口响应
 ```
 
+## 安全设计
+
+- 纯 Rust 加密实现，不依赖 OpenSSL
+- 所有 HTTP 响应强制验签（fail-closed），证书存储非空时缺少签名头即报错
+- 回调通知验签 + 时间戳新鲜度检查（±5 分钟窗口）
+- AES-256-GCM 解密使用 AAD（附加认证数据），防篡改
+- `ClientConfig` 销毁时自动清零 `api_v3_key` 和 `private_key_pem`
+- `api_v3_key` 强制 32 字节 ASCII 校验
+- URL 路径参数全部 percent-encoding，防注入
+- RSA 签名使用 `spawn_blocking`，避免阻塞异步运行时
+
 ## 构建与测试
 
 ```bash
 cargo build
 cargo clippy
-cargo test
+cargo test     # 53 个单元测试
 ```

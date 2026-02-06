@@ -42,11 +42,13 @@ WxPayClient (client.rs)          ← Facade: signed HTTP requests + response ver
 
 ### Key Patterns
 
-- **Builder pattern** for `ClientConfig`: requires `mch_id`, `serial_no`, `api_v3_key` (must be 32 bytes), `private_key_pem` (PKCS1 or PKCS8). Fields are `pub(crate)` with public getters (`mch_id()`, `serial_no()`, `base_url()`).
+- **Builder pattern** for `ClientConfig`: requires `mch_id`, `serial_no`, `api_v3_key` (must be 32 ASCII bytes), `private_key_pem` (PKCS1 or PKCS8). Fields are `pub(crate)` with public getters (`mch_id()`, `serial_no()`, `base_url()`).
+- **Sensitive field protection**: `ClientConfig` implements `Drop` to zeroize `api_v3_key` and `private_key_pem` on destruction (via `zeroize` crate). `api_v3_key` is validated to be ASCII-only.
 - **All public methods** return `Result<T, WxPayError>`.
-- **Certificate auto-refresh**: platform certs are fetched from `/v3/certificates`, decrypted with `api_v3_key`, cached in-memory, and refreshed every 12 hours via double-checked locking with `Arc<RwLock<>>`.
-- **Unified response verification**: all HTTP methods (`post`, `post_no_content`, `get`, `get_bytes`) use `verify_response_signature()` — a single method that enforces consistent signature checking (fail-closed when cert store is populated, skip during bootstrap).
-- **Request flow**: build sign message → SHA256withRSA sign → set `Authorization` header → send → verify response signature with platform cert → deserialize.
+- **Certificate auto-refresh**: platform certs are fetched from `/v3/certificates` via standalone `fetch_platform_certs()`, decrypted with `api_v3_key`, cached in-memory, and refreshed every 12 hours. Uses `AtomicU64` for a lock-free fast path — most requests skip the `RwLock` entirely. HTTP fetch runs outside the lock; write lock is only held briefly to swap the cert store.
+- **Non-blocking RSA signing**: `do_request()` and `get_bytes()` use `tokio::task::spawn_blocking` for RSA-2048 PKCS1v15 signing (~1-3ms), preventing async runtime thread starvation under high concurrency. `signing_key` is `Arc<SigningKey<Sha256>>` for cheap cloning into the blocking closure.
+- **Unified response verification**: all HTTP methods (`post`, `post_no_content`, `get`, `get_bytes`) use `verify_response_signature()` — a single method that enforces consistent signature checking (fail-closed when cert store is populated, skip during bootstrap). Bootstrap skip is safe because AES-GCM decryption of the certificate response provides implicit authentication via `api_v3_key`.
+- **Request flow**: build sign message → SHA256withRSA sign (spawn_blocking) → set `Authorization` header → send → verify response signature with platform cert → deserialize.
 - **Notification flow**: verify signature → check timestamp freshness (±5 min) → AES-256-GCM decrypt `resource.ciphertext` → deserialize.
 - **`verify_signature()`** returns `Ok(bool)` (not `Err` on mismatch) — callers check the bool.
 
@@ -65,12 +67,20 @@ WxPayClient (client.rs)          ← Facade: signed HTTP requests + response ver
 - `get_bytes()` — GET returning raw `bytes::Bytes` (bill downloads)
 - `verify_response_signature()` — unified response signature verification
 - `encode_path_segment()` — shared URL percent-encoding helper
+- `ensure_certs()` — atomic fast-path cert freshness check + refresh
+
+### Core Internal Functions (cert/manager.rs)
+
+- `fetch_platform_certs()` — standalone async function: signs request, fetches `/v3/certificates`, decrypts and parses certs. Designed to run outside any lock.
 
 ### Tests
 
-Tests are inline `#[cfg(test)]` modules within source files (24 tests total):
-- **crypto/**: sign/verify roundtrips, decrypt/encrypt roundtrips, tamper detection (9 tests)
-- **config.rs**: builder validation, required fields, key length, default/custom base URL, getters (9 tests)
-- **client.rs**: `extract_path` URL parsing, `encode_path_segment` encoding (6 tests)
+Tests are inline `#[cfg(test)]` modules within source files (53 tests total):
+- **crypto/sign.rs** (4): message building, authorization header, sign+verify roundtrip
+- **crypto/verify.rs** (7): message format, roundtrip, tampered body/timestamp, invalid base64, wrong key
+- **crypto/decrypt.rs** (8): roundtrip, invalid key/nonce length, invalid base64, tampered ciphertext, wrong AAD/key, empty AAD
+- **config.rs** (12): builder validation, required fields, key length, ASCII validation, default/custom base URL, getters, zeroize behavior
+- **client.rs** (12): `extract_path` URL parsing (6), `encode_path_segment` encoding (4), timestamp sanity (2)
+- **cert/store.rs** (9): empty/default store, update/get, unknown serial, replace-all, multiple certs, refresh logic, clear on empty update
 
-Tests generate real RSA keys — no mocking framework.
+Tests generate real RSA 2048-bit keys at runtime — no mocking framework.
