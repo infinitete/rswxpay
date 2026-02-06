@@ -2,7 +2,12 @@
 name = "rswxpay"
 version = "0.1.0"
 edition = "2024"
-description = "WeChat Pay V3 API SDK for Rust"
+description = "WeChat Pay V3 API SDK for Rust — pure Rust crypto, no OpenSSL"
+license = "MIT"
+repository = "https://github.com/infinitete/rswxpay"
+keywords = ["wechat", "wechat-pay", "payment", "sdk"]
+categories = ["api-bindings", "cryptography"]
+readme = "README.md"
 
 [dependencies]
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
