@@ -1,5 +1,7 @@
 # wxp
 
+[![CI](https://github.com/infinitete/rswxpay/actions/workflows/ci.yml/badge.svg)](https://github.com/infinitete/rswxpay/actions/workflows/ci.yml)
+
 纯 Rust 实现的微信支付 V3 API SDK。
 
 ## 功能
