@@ -1,0 +1,25 @@
+[package]
+name = "wxp"
+version = "0.1.0"
+edition = "2024"
+description = "WeChat Pay V3 API SDK for Rust"
+
+[dependencies]
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+rsa = { version = "0.9", features = ["pem", "sha2"] }
+aes-gcm = "0.10"
+x509-cert = "0.2"
+base64 = "0.22"
+sha2 = "0.10"
+rand = "0.8"
+thiserror = "2"
+tracing = "0.1"
+uuid = { version = "1", features = ["v4"] }
+tokio = { version = "1", features = ["sync"] }
+bytes = "1"
+percent-encoding = "2"
+
+[dev-dependencies]
+tokio = { version = "1", features = ["full"] }
