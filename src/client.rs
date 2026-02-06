@@ -204,7 +204,7 @@ impl WxPayClient {
             .get(&full_url)
             .header("Authorization", &auth)
             .header("Accept", "application/json")
-            .header("User-Agent", "wxp-rust-sdk/0.1.0")
+            .header("User-Agent", "rswxpay/0.1.0")
             .send()
             .await?;
 
@@ -272,7 +272,7 @@ impl WxPayClient {
             .request(http_method, &full_url)
             .header("Authorization", &auth)
             .header("Accept", "application/json")
-            .header("User-Agent", "wxp-rust-sdk/0.1.0");
+            .header("User-Agent", "rswxpay/0.1.0");
 
         if method != "GET" {
             req = req

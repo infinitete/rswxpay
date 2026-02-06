@@ -77,7 +77,7 @@ pub(crate) async fn fetch_platform_certs(
         .get(&url)
         .header("Authorization", &auth)
         .header("Accept", "application/json")
-        .header("User-Agent", "wxp-rust-sdk/0.1.0")
+        .header("User-Agent", "rswxpay/0.1.0")
         .send()
         .await
         .map_err(WxPayError::Http)?;

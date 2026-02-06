@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-**wxp** is a pure Rust WeChat Pay V3 API SDK (library crate, not a binary). It provides async client functionality for payment creation, order management, refunds, bill downloads, and webhook notification handling. All cryptography is pure Rust (no OpenSSL).
+**rswxpay** is a pure Rust WeChat Pay V3 API SDK (library crate, not a binary). It provides async client functionality for payment creation, order management, refunds, bill downloads, and webhook notification handling. All cryptography is pure Rust (no OpenSSL).
 
 ## Commands
 

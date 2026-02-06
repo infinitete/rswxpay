@@ -1,5 +1,5 @@
 [package]
-name = "wxp"
+name = "rswxpay"
 version = "0.1.0"
 edition = "2024"
 description = "WeChat Pay V3 API SDK for Rust"

@@ -1001,6 +1001,28 @@ dependencies = [
 ]
 
 [[package]]
+name = "rswxpay"
+version = "0.1.0"
+dependencies = [
+ "aes-gcm",
+ "base64",
+ "bytes",
+ "percent-encoding",
+ "rand 0.8.5",
+ "reqwest",
+ "rsa",
+ "serde",
+ "serde_json",
+ "sha2",
+ "thiserror",
+ "tokio",
+ "tracing",
+ "uuid",
+ "x509-cert",
+ "zeroize",
+]
+
+[[package]]
 name = "rustc-hash"
 version = "2.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1766,28 +1788,6 @@ name = "writeable"
 version = "0.6.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9edde0db4769d2dc68579893f2306b26c6ecfbe0ef499b013d731b7b9247e0b9"
-
-[[package]]
-name = "wxp"
-version = "0.1.0"
-dependencies = [
- "aes-gcm",
- "base64",
- "bytes",
- "percent-encoding",
- "rand 0.8.5",
- "reqwest",
- "rsa",
- "serde",
- "serde_json",
- "sha2",
- "thiserror",
- "tokio",
- "tracing",
- "uuid",
- "x509-cert",
- "zeroize",
-]
 
 [[package]]
 name = "x509-cert"

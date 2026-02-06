@@ -1,4 +1,4 @@
-# wxp
+# rswxpay
 
 [![CI](https://github.com/infinitete/rswxpay/actions/workflows/ci.yml/badge.svg)](https://github.com/infinitete/rswxpay/actions/workflows/ci.yml)
 
@@ -28,12 +28,12 @@
 ## 快速开始
 
 ```rust
-use wxp::{ClientConfig, WxPayClient};
-use wxp::model::common::{Amount, Payer};
-use wxp::model::prepay::JsapiPrepayRequest;
+use rswxpay::{ClientConfig, WxPayClient};
+use rswxpay::model::common::{Amount, Payer};
+use rswxpay::model::prepay::JsapiPrepayRequest;
 
 #[tokio::main]
-async fn main() -> Result<(), wxp::WxPayError> {
+async fn main() -> Result<(), rswxpay::WxPayError> {
     let config = ClientConfig::builder()
         .mch_id("1900000001")
         .serial_no("YOUR_SERIAL_NO")
@@ -117,7 +117,7 @@ let bill = client.get_fund_flow_bill(&req).await?;
 ### 回调通知
 
 ```rust
-use wxp::model::notify::NotifyHeaders;
+use rswxpay::model::notify::NotifyHeaders;
 
 let headers = NotifyHeaders {
     timestamp: /* Wechatpay-Timestamp */,
@@ -136,7 +136,7 @@ let refund = client.parse_refund_notify(&headers, &body).await?;
 ## 模块结构
 
 ```
-wxp/src/
+rswxpay/src/
 ├── lib.rs              公开导出
 ├── client.rs           WxPayClient（签名 HTTP、响应验签）
 ├── config.rs           ClientConfig + Builder
