@@ -116,8 +116,7 @@ impl WxPayClient {
 
         // Schedule next refresh in 12 hours.
         let refresh_at = current_timestamp() as u64 + 12 * 3600;
-        self.next_cert_refresh
-            .store(refresh_at, Ordering::Release);
+        self.next_cert_refresh.store(refresh_at, Ordering::Release);
 
         Ok(())
     }
@@ -188,11 +187,10 @@ impl WxPayClient {
 
         let sign_msg = build_sign_message("GET", &path, timestamp, &nonce, "");
         let signing_key = Arc::clone(&self.signing_key);
-        let signature = tokio::task::spawn_blocking(move || {
-            sign_sha256_rsa(&signing_key, &sign_msg)
-        })
-        .await
-        .map_err(|e| WxPayError::SignError(format!("task join: {e}")))??;
+        let signature =
+            tokio::task::spawn_blocking(move || sign_sha256_rsa(&signing_key, &sign_msg))
+                .await
+                .map_err(|e| WxPayError::SignError(format!("task join: {e}")))??;
         let auth = build_authorization_header(
             &self.config.mch_id,
             &self.config.serial_no,
@@ -253,11 +251,10 @@ impl WxPayClient {
         // Move RSA signing to the blocking thread pool to avoid blocking
         // the async runtime (~1-3ms for RSA-2048 PKCS1v15 signing).
         let signing_key = Arc::clone(&self.signing_key);
-        let signature = tokio::task::spawn_blocking(move || {
-            sign_sha256_rsa(&signing_key, &sign_msg)
-        })
-        .await
-        .map_err(|e| WxPayError::SignError(format!("task join: {e}")))??;
+        let signature =
+            tokio::task::spawn_blocking(move || sign_sha256_rsa(&signing_key, &sign_msg))
+                .await
+                .map_err(|e| WxPayError::SignError(format!("task join: {e}")))??;
         let auth = build_authorization_header(
             &self.config.mch_id,
             &self.config.serial_no,
